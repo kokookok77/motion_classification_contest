@@ -2,9 +2,6 @@ import pandas as pd
 import numpy as np
 
 import tensorflow as tf
-from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import Dense, LSTM, Conv1D
-
 
 
 
@@ -18,71 +15,56 @@ X=tf.reshape(np.array(train_feature.iloc[:,3:9]),[-1, 600, 6])
 print(X.shape)
 
 
-class InceptionModule(tf.keras.layers.Layer):
-    def __init__(self, num_filters=32, activation='relu', **kwargs):
-        super().__init__(**kwargs)
-        self.num_filters = num_filters
-        self.activation = tf.keras.activations.get(activation)
-
-    def _default_Conv1D(self, filters, kernel_size):
-        return tf.keras.layers.Conv1D(filters=filters,
-                                      kernel_size=kernel_size,
-                                      strides=1,
-                                      padding='same',
-                                      activation='relu',
-                                      use_bias=False)
-
-    def call(self, inputs):
-        
-        z_bottleneck = self._default_Conv1D(filters=self.num_filters, kernel_size=1)(inputs)
-        z_maxpool = tf.keras.layers.MaxPool1D(pool_size=3, strides=1, padding='same')(inputs)
-
-        z1 = self._default_Conv1D(filters=self.num_filters, kernel_size=10)(z_bottleneck)
-        z2 = self._default_Conv1D(filters=self.num_filters, kernel_size=20)(z_bottleneck)
-        z3 = self._default_Conv1D(filters=self.num_filters, kernel_size=40)(z_bottleneck)
-        z4 = self._default_Conv1D(filters=self.num_filters, kernel_size=1)(z_maxpool)
-
-        z = tf.keras.layers.Concatenate(axis=2)([z1, z2, z3, z4])
-        z = tf.keras.layers.BatchNormalization()(z)
-
-        return self.activation(z)
+from tensorflow.keras.models import Model
+from tensorflow.keras.layers import Input, Dense, LSTM, multiply, concatenate, Activation, Masking, Reshape
+from tensorflow.keras.layers import Conv1D, BatchNormalization, GlobalAveragePooling1D, Permute, Dropout
 
 
-def shortcut_layer(inputs, z_inception):
-    z_shortcut = tf.keras.layers.Conv1D(filters=int(z_inception.shape[-1]), 
-                                        kernel_size=1, 
-                                        padding='same', 
-                                        use_bias=False)(inputs)
+DATASET_INDEX = 3
 
-    z_shortcut = tf.keras.layers.BatchNormalization()(z_shortcut)
+MAX_TIMESTEPS = 600
+MAX_NB_VARIABLES = 6
+NB_CLASS = 61
 
-    z = tf.keras.layers.Add()([z_shortcut, z_inception])
-
-    return tf.keras.layers.Activation('relu')(z)
+TRAINABLE = True
 
 
-def build_model(input_shape, num_classes, num_modules=6):
-    input_layer = tf.keras.layers.Input(input_shape)
-    z = input_layer
-    z_residual = input_layer
+def generate_model():
+    ip = Input(shape=(MAX_TIMESTEPS, MAX_NB_VARIABLES))
 
-    for i in range(num_modules):
-        z = InceptionModule()(z)
-        if i%3 == 2:
-            z = shortcut_layer(z_residual, z)
-            z_residual = z
+    x = Masking()(ip)
+    x = LSTM(8)(x)
+    x = Dropout(0.8)(x)
 
-    gap_layer = tf.keras.layers.GlobalAveragePooling1D()(z)
-    output_layer = tf.keras.layers.Dense(num_classes, activation='softmax')(gap_layer)
+    y = Permute((2, 1))(ip)
+    y = Conv1D(128, 8, padding='same', kernel_initializer='he_uniform')(y)
+    y = BatchNormalization()(y)
+    y = Activation('relu')(y)
+    
+    y = Conv1D(256, 5, padding='same', kernel_initializer='he_uniform')(y)
+    y = BatchNormalization()(y)
+    y = Activation('relu')(y)
+   
+    y = Conv1D(128, 3, padding='same', kernel_initializer='he_uniform')(y)
+    y = BatchNormalization()(y)
+    y = Activation('relu')(y)
 
-    model = tf.keras.models.Model(inputs= input_layer, outputs= output_layer)
-    model.compile(loss='categorical_crossentropy', optimizer=tf.keras.optimizers.Adam(),
-                  metrics=['accuracy'])
+    y = GlobalAveragePooling1D()(y)
+
+    x = concatenate([x, y])
+
+    out = Dense(NB_CLASS, activation='softmax')(x)
+
+    model = Model(ip, out)
+    model.summary()
+    model.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=0.0001), loss='categorical_crossentropy', metrics=['accuracy'])
+
+    # add load model code here to fine-tune
 
     return model
 
 
-model = build_model((600, 6), 61, num_modules=6)
+model = generate_model()
 model.fit(X,y, epochs=30, batch_size=128, validation_split=0.2)
 
 
